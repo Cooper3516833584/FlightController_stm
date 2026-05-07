@@ -2,3 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Build artifacts
+*.egg-info/
+.build/
+dist/
