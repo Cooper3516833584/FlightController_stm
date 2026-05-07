@@ -81,12 +81,22 @@ python3 -m compileall FlightController
 python3 -c "from FlightController import FC_Controller; print('FlightController import OK')"
 ```
 
+Run the full no-hardware environment check after all Python dependencies are
+installed. This validates imports, native bindings, and pure software smoke
+paths without opening serial ports, cameras, D500 radars, T265, or model files:
+
+```bash
+source .venv/bin/activate
+python3 tools/check_environment_no_hardware.py
+```
+
 ## Validation Sequence
 
 Run the no-hardware checks first, then hardware smoke tests with stable device
 paths from `/dev/serial/by-id` and `/dev/v4l/by-id`:
 
 ```bash
+python3 tools/check_environment_no_hardware.py
 python3 tools/validate_imports.py
 python3 tools/smoke_no_hardware.py
 python3 tools/smoke_fc_serial.py --port /dev/serial/by-id/xxx_fc
