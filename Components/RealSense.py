@@ -94,20 +94,21 @@ class T265(object):
         if connection == "raw":
             self._connect_rs(**args)
         elif connection == "ros":
-            from .RosNode import T265ListenNode
-
-            # 解耦:按需导入ROS相关的模块,防止非ROS环境下无法运行
-            self._ros_node = T265ListenNode(self._callback_ros)
+            raise ValueError("ROS T265 listener has been removed from this migration")
         else:
             raise ValueError(f"Invalid connection type: {connection}")
 
     def _connect_rs(self, **args) -> None:
         try:
             import pyrealsense2 as rs
-
-            rs.config()
-        except:
-            import pyrealsense2.pyrealsense2 as rs  # for linux
+        except ImportError:
+            try:
+                import pyrealsense2.pyrealsense2 as rs  # for linux
+            except ImportError as exc:
+                raise RuntimeError(
+                    "pyrealsense2 is required for T265 raw mode. "
+                    "Install requirements-t265.txt and validate it first."
+                ) from exc
         log_level = args.get("log_to_file", "info")
         if args.get("log_to_file", False):
             rs.log_to_file(getattr(rs.log_severity, log_level), "rs_t265.log")
@@ -276,6 +277,31 @@ class T265(object):
         if self._connection_type != "ros":
             self._pipe.stop()
         logger.info("[T265] Stopped")
+
+    @property
+    def is_ready(self) -> bool:
+        return self.running and self.pose.tracker_confidence >= 2
+
+    def get_xy_yaw_cm(self) -> tuple[float, float, float, bool]:
+        """Return x_cm, y_cm, yaw_deg, available using Navigation pose axes."""
+        if self._last_trans_args is None:
+            position = np.array(
+                [
+                    self.pose.translation.x,
+                    self.pose.translation.y,
+                    self.pose.translation.z,
+                ],
+                dtype=float,
+            )
+            eular = self.eular_rotation
+        else:
+            position, eular = self.get_pose_in_secondary_frame(self._last_trans_args, as_eular=True)
+
+        x_cm = -position[2] * 100
+        y_cm = -position[0] * 100
+        yaw_deg = -eular[2]
+        available = self.pose.tracker_confidence >= 2
+        return float(x_cm), float(y_cm), float(yaw_deg), bool(available)
 
     @property
     def fps(self) -> float:

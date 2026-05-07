@@ -6,6 +6,7 @@ from threading import Event
 from typing import Callable, Dict, List, Optional
 
 import serial
+from FlightController.Components.DeviceResolver import resolve_fc_port
 from FlightController.Serial import (
     SerialReader,
     SerialReaderBuffered,
@@ -14,7 +15,6 @@ from FlightController.Serial import (
 )
 from loguru import logger
 from serial.serialutil import SerialException
-from serial.tools.list_ports import comports
 
 
 def bytes_to_str(data):
@@ -318,12 +318,7 @@ class FC_Settings_Struct:
 
 
 def get_fc_com() -> Optional[str]:
-    VID_PID = "66CC:2233"
-    for port, desc, hwid in sorted(comports()):
-        if VID_PID in hwid:
-            logger.info(f"[FC] Found FC hwid on port {port}")
-            return port
-    return None
+    return resolve_fc_port(required=False)
 
 
 class FC_Base_Uart_Comunication(object):
@@ -344,6 +339,9 @@ class FC_Base_Uart_Comunication(object):
         self._radar_callback: Optional[Callable[[bytes], None]] = None
         self._uart_screen_callback: Optional[Callable[[bytes], None]] = None
         self._wireless_callback: Optional[Callable[[bytes], None]] = None
+        self._serial_dev_requested: Optional[str] = None
+        self._serial_baudrate = 500000
+        self._serial_auto_resolve = True
         self.state = FC_State_Struct()
         self.event = FC_Event_Struct()
         self.settings = FC_Settings_Struct()
@@ -367,22 +365,27 @@ class FC_Base_Uart_Comunication(object):
         """
         self._state_update_callback = callback
         self._print_state_flag = print_state
+        self._serial_dev_requested = serial_dev
+        self._serial_baudrate = baudrate
+        self._serial_auto_resolve = serial_dev is None
         if not block_until_connected:
             if serial_dev is None:
-                serial_dev = get_fc_com()
-                assert serial_dev, "FC comport not found"
-            self._ser = serial.Serial(serial_dev, baudrate, timeout=0.5, write_timeout=0)
+                serial_dev = resolve_fc_port(required=True)
+            self._open_serial(serial_dev)
         else:
             while True:
                 try:
-                    if serial_dev is None:
-                        assert (serial_dev := get_fc_com())
-                    self._ser = serial.Serial(serial_dev, baudrate, timeout=0.5, write_timeout=0)
+                    serial_dev_to_open = (
+                        resolve_fc_port(required=True)
+                        if self._serial_auto_resolve
+                        else serial_dev
+                    )
+                    assert serial_dev_to_open, "FC comport not found"
+                    self._open_serial(serial_dev_to_open)
                     break
                 except Exception as e:
                     logger.warning(f"[FC] Serial port open failed: {e}, retrying")
                     time.sleep(1)
-        self._reader = SerialReaderBuffered(self._ser, [0xAA, 0x55])
         logger.info("[FC] Serial port opened")
         self.running = True
         _listen_thread = threading.Thread(target=self._listen_serial_task)
@@ -400,6 +403,10 @@ class FC_Base_Uart_Comunication(object):
         if self._reader:
             self._reader.close()
         logger.info("[FC] Threads closed, FC offline")
+
+    def _open_serial(self, serial_dev: str) -> None:
+        self._ser = serial.Serial(serial_dev, self._serial_baudrate, timeout=0.5, write_timeout=0)
+        self._reader = SerialReaderBuffered(self._ser, [0xAA, 0x55])
 
     def send_data_to_fc(
         self,
@@ -485,13 +492,28 @@ class FC_Base_Uart_Comunication(object):
             except SerialException:
                 logger.warning("[FC] Serialport is closed, try to reopen")
                 self.connected = False
-                self._ser.close()
+                try:
+                    self._ser.close()
+                except Exception:
+                    pass
                 while self.running:
                     try:
+                        if self._serial_auto_resolve:
+                            serial_dev = resolve_fc_port(required=False)
+                            if serial_dev is None:
+                                time.sleep(0.5)
+                                continue
+                            self._open_serial(serial_dev)
+                            logger.info(f"[FC] Serialport reopened on {serial_dev}")
+                            break
+
                         self._ser.open()
                         logger.info("[FC] Serialport reopened")
                         break
                     except SerialException:
+                        time.sleep(0.5)
+                    except Exception as e:
+                        logger.warning(f"[FC] Serialport reopen failed: {e}")
                         time.sleep(0.5)
             except Exception as e:
                 logger.exception(f"[FC] Listen serial exception")

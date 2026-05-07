@@ -1,15 +1,14 @@
 import threading
 import time
-from typing import Callable, Generator, List, Literal, Optional, Union
+from typing import Callable, Generator, List, Optional, Union
 
 import cv2
 import numpy as np
 import serial
-from FlightController import FC_Client, FC_Controller, FC_Like, FC_Server
+from FlightController import FC_Controller, FC_Like
+from FlightController.Components.DeviceResolver import resolve_radar_port
 from FlightController.Solutions.Radar_SLAM import ICPM, radar_resolve_rt_pose,radar_find_target
 from loguru import logger
-from serial.tools.list_ports import comports
-from config_manager import ConfigManager
 from .LDRadar_Resolver import (
     Map_Circle,
     Point_2D,
@@ -21,12 +20,7 @@ from .LDRadar_Resolver import (
 
 
 def get_radar_com() -> Optional[str]:
-    VID_PID = "10C4:EA60"
-    for port, desc, hwid in sorted(comports()):
-        if VID_PID in hwid:
-            logger.info(f"[RADAR] Found radar hwid on port {port}")
-            return port
-    return None
+    return resolve_radar_port(index=0, required=False)
 
 
 class LD_Radar(object):
@@ -34,7 +28,18 @@ class LD_Radar(object):
     乐动激光雷达驱动
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        name: str = "radar",
+        index: int = 0,
+        mount_xy_cm: tuple[float, float] = (0.0, 0.0),
+        mount_yaw_deg: float = 0.0,
+    ):
+        self.name = name
+        self.index = index
+        self.mount_xy_cm = np.asarray(mount_xy_cm, dtype=float)
+        self.mount_yaw_deg = float(mount_yaw_deg)
+        self._lock = threading.RLock()
         self.map = Map_Circle()
         self.running = False
         self.connected = False
@@ -42,6 +47,7 @@ class LD_Radar(object):
         self._package = Radar_Package()
         self._package_multi = Radar_Package_Multi()
         self._serial = None
+        self._ros_node = None
         self._update_callback = None
         self.debug = True
         self.subtask_event = threading.Event()
@@ -64,8 +70,8 @@ class LD_Radar(object):
 
     def start(
         self,
-        com: Union[str, None, FC_Like, Literal["ros"]] = None,
-        radar_type: str = "LD06",
+        com: Union[str, None, FC_Like] = None,
+        radar_type: str = "D500",
         subtask_skip=4,
     ):
         """
@@ -77,32 +83,36 @@ class LD_Radar(object):
         if self.running:
             self.stop()
         self.running = True
+        self.connected = False
         self.subtask_event.clear()
         self.subtask_skip = subtask_skip
         self._ros_node = None
         if com == "ros":
-            from .RosNode import RadarListenNode
-
-            # 解耦:按需导入ROS相关的模块,防止非ROS环境下无法运行
-            self._ros_node = RadarListenNode(self._ros_callback)
-        elif isinstance(com, (FC_Client, FC_Controller, FC_Server)):
+            raise ValueError("ROS radar listener has been removed from this migration")
+        elif isinstance(com, FC_Controller):
             com.register_radar_callback(self._fc_callback)
             logger.info("[RADAR] Registered radar on FC")
         elif isinstance(com, str) or com is None:
             if com is None:
-                com = get_radar_com()
-            if radar_type == "LD08":
+                com = resolve_radar_port(index=self.index, required=True)
+            radar_type_upper = radar_type.upper()
+            if radar_type_upper == "LD08":
                 baudrate = 115200
-            elif radar_type == "LD06":
+            elif radar_type_upper in ("D500", "LD06"):
                 baudrate = 230400
             else:
                 raise ValueError("Unknown radar type")
-            self._serial = serial.Serial(com, baudrate=baudrate)
+            try:
+                self._serial = serial.Serial(com, baudrate=baudrate)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"[RADAR:{self.name}] Serial open failed: com={com}, baudrate={baudrate}"
+                ) from exc
             thread = threading.Thread(target=self._read_serial_task)
             thread.daemon = True
             thread.start()
             self._thread_list.append(thread)
-            logger.info("[RADAR] Listenning thread started")
+            logger.info(f"[RADAR:{self.name}] Listenning thread started on {com} @ {baudrate}")
         else:
             raise ValueError("Unknown com type")
         thread = threading.Thread(target=self._map_resolve_task)
@@ -123,7 +133,8 @@ class LD_Radar(object):
             return
         self.connected = True
         if resolve_radar_data_multi(buf, self._package_multi):
-            self.map.update(self._package_multi)
+            with self._lock:
+                self.map.update(self._package_multi)
             if self._update_callback is not None:
                 self._update_callback(self._package_multi)
             self._count += 1
@@ -135,7 +146,8 @@ class LD_Radar(object):
         if not self.running:
             return
         self.connected = True
-        self.map.update(pack)
+        with self._lock:
+            self.map.update(pack)
         if self._update_callback is not None:
             self._update_callback(pack)
         self._count += 1
@@ -148,6 +160,7 @@ class LD_Radar(object):
         停止监听雷达数据
         """
         self.running = False
+        self.connected = False
         if self._ros_node is not None:
             self._ros_node.stop()
         if joined:
@@ -178,7 +191,8 @@ class LD_Radar(object):
                         reading_flag = False
                         self.connected = True
                         if resolve_radar_data(read_buffer, self._package):
-                            self.map.update(self._package)
+                            with self._lock:
+                                self.map.update(self._package)
                             if self._update_callback is not None:
                                 self._update_callback(self._package)
                             self._count += 1
@@ -190,6 +204,40 @@ class LD_Radar(object):
             except Exception as e:
                 logger.exception(f"[RADAR] Listenning thread error")
                 time.sleep(0.5)
+
+    def get_points_xy_cm(self, max_distance_cm: float | None = None) -> np.ndarray:
+        """Return current radar-frame point cloud as shape=(N, 2), unit cm."""
+        with self._lock:
+            points = self.map.output_points(scale=0.1, remove_unavil=True)
+            points = np.asarray(points, dtype=float)
+
+        if points.size == 0:
+            return np.empty((0, 2), dtype=float)
+        if points.ndim != 2:
+            points = points.reshape(2, -1)
+        if points.shape[0] == 2:
+            points = points.T
+        if points.shape[1] != 2:
+            return np.empty((0, 2), dtype=float)
+
+        if max_distance_cm is not None:
+            distances = np.linalg.norm(points, axis=1)
+            points = points[distances <= max_distance_cm]
+        return points.astype(float, copy=False)
+
+    def get_points_body_cm(self, max_distance_cm: float | None = None) -> np.ndarray:
+        """Return body-frame point cloud as shape=(N, 2), unit cm."""
+        points = self.get_points_xy_cm(max_distance_cm=max_distance_cm)
+        if points.size == 0:
+            return np.empty((0, 2), dtype=float)
+        rad = np.deg2rad(self.mount_yaw_deg)
+        rotation = np.array(
+            [
+                [np.cos(rad), -np.sin(rad)],
+                [np.sin(rad), np.cos(rad)],
+            ]
+        )
+        return points @ rotation.T + self.mount_xy_cm
 
     def _map_resolve_task(self):
         while self.running:

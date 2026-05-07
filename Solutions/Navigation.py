@@ -1,16 +1,20 @@
+from __future__ import annotations
+
 import threading
 import time
-from typing import Any, List, Literal, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, List, Literal, Optional, Tuple, Union
 
 import numpy as np
 from attr import dataclass
 from FlightController import FC_Like
-from FlightController.Components import LD_Radar
-from FlightController.Components.RealSense import T265, T265_Pose_Frame
 from loguru import logger
 from simple_pid import PID
 
 from .PathPlanner import PFBPP, TrajectoryGenerator
+
+if TYPE_CHECKING:
+    from FlightController.Components.LDRadar_Driver import LD_Radar
+    from FlightController.Components.RealSense import T265, T265_Pose_Frame
 
 logger_dbg = logger.bind(debug=True)
 
@@ -36,10 +40,10 @@ class Navigation(object):
     def __init__(self, *args, **kwargs):
         """
         Args:
-            fc: 飞控实例(必须) (FC_Controller, FC_Client, FC_Server)
+            fc: 飞控实例(必须) (FC_Controller)
             radar: 雷达实例(必须) (LD_Radar)
             rs: realsense实例(必须) (T265)(这里因为2024/3/5时还没有t265硬件,将初始化的t265默认为None)
-            mapper: ROS地图模块实例(可选) (RosMapper)
+            mapper: optional external map module instance.
         """
         self.fc: FC_Like = kwargs["fc"]
         self.radar: LD_Radar = kwargs["radar"]
@@ -49,10 +53,7 @@ class Navigation(object):
         self.rs: T265 = kwargs.get("rs",None)
 
         if "mapper" in kwargs:
-            from FlightController.Components.RosMapper import RosMapper
-
-            # 解耦:按需导入ROS相关的模块,防止非ROS环境下无法运行
-            self.mapper: Optional[RosMapper] = kwargs["mapper"]
+            self.mapper = kwargs["mapper"]
         else:
             self.mapper = None
         ############### PID #################
@@ -133,7 +134,8 @@ class Navigation(object):
         停止导航
         """
         self.running = False
-        self.radar.stop_resolve_pose()
+        if self.radar is not None and hasattr(self.radar, "stop_resolve_pose"):
+            self.radar.stop_resolve_pose()
         if join:
             for thread in self._thread_list:
                 thread.join()
