@@ -112,9 +112,19 @@ def main() -> None:
         default=10.0,
         help="主循环频率/Hz (默认: 10)",
     )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="将日志同时写入文件 (用于 tail -f 实时监控，绕过SSH缓冲)",
+    )
     args = parser.parse_args()
 
-    # ---------- 初始化雷达 ----------
+    # ---------- 日志文件输出 (绕过SSH缓冲) ----------
+    if args.log_file:
+        logger.add(args.log_file, level="DEBUG", format="{time} | {level: <8} | {message}", enqueue=False)
+        logger.info(f"日志文件输出已启用: {args.log_file}")
+
     logger.info(f"正在连接雷达 {args.port} ...")
     radar = LD_Radar(
         name="Avoidance_Test",
