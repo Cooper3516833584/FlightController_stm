@@ -200,6 +200,8 @@ def main() -> None:
     loop_count = 0
     _last_update_count = 0
     _last_profile_time = time.perf_counter()
+    _last_forward_dist: float | None = None
+    _step_start_time: float | None = None
     try:
         while True:
             t_start = time.perf_counter()
@@ -243,6 +245,18 @@ def main() -> None:
                     closest = forward_pts[sorted_idx][:10]
                     for i, (x, y) in enumerate(closest):
                         logger.info(f"  -> 第{i+1}近: x={x:.1f}cm, y={y:.1f}cm, dist={np.hypot(x,y):.1f}cm")
+
+            # 3b. 步进响应延迟测量: 障碍物距离发生显著变化时记录
+            dist_now = forward_dist
+            if _last_forward_dist is None or dist_now is None:
+                state_changed = _last_forward_dist is not None or dist_now is not None
+            else:
+                state_changed = abs(dist_now - _last_forward_dist) > 15.0
+            if state_changed:
+                old_str = f"{_last_forward_dist:.0f}cm" if _last_forward_dist is not None else "无"
+                new_str = f"{dist_now:.0f}cm" if dist_now is not None else "无"
+                logger.info(f"[LATENCY] 障碍物变化: {old_str} → {new_str} | 帧#{loop_count}")
+                _last_forward_dist = dist_now
 
             # 4. 规划避障决策
             command = planner.plan(obstacles_body_cm=obstacles, target=None)
