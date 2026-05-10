@@ -171,26 +171,26 @@ class LD_Radar(object):
         logger.info("[RADAR] Stopped all threads")
 
     def _read_serial_task(self):
-        reading_flag = False
         start_bit = b"\x54\x2C"
-        package_length = 45
-        read_buffer = bytes()
-        wait_buffer = bytes()
+        package_length = 45  # payload bytes after header
+        frame_length = len(start_bit) + package_length  # 47
+        buf = bytes()
         while self.running:
             try:
                 if self._serial.in_waiting > 0:
-                    if not reading_flag:  # 等待包头
-                        wait_buffer += self._serial.read(1)
-                        if len(wait_buffer) >= 2:
-                            if wait_buffer[-2:] == start_bit:
-                                reading_flag = True
-                                wait_buffer = bytes()
-                                read_buffer = start_bit
-                    else:  # 读取数据
-                        read_buffer += self._serial.read(package_length)
-                        reading_flag = False
+                    buf += self._serial.read(self._serial.in_waiting)
+                    while len(buf) >= frame_length:
+                        # Search for start bit
+                        idx = buf.find(start_bit)
+                        if idx == -1:
+                            buf = buf[-(len(start_bit) - 1):] if len(buf) >= len(start_bit) - 1 else buf
+                            break
+                        if idx > 0:
+                            buf = buf[idx:]
+                        frame = buf[:frame_length]
+                        buf = buf[frame_length:]
                         self.connected = True
-                        if resolve_radar_data(read_buffer, self._package):
+                        if resolve_radar_data(frame, self._package):
                             with self._lock:
                                 self.map.update(self._package)
                             if self._update_callback is not None:
@@ -203,6 +203,7 @@ class LD_Radar(object):
                     time.sleep(0.001)
             except Exception as e:
                 logger.exception(f"[RADAR] Listenning thread error")
+                buf = bytes()
                 time.sleep(0.5)
 
     def get_points_xy_cm(self, max_distance_cm: float | None = None) -> np.ndarray:
