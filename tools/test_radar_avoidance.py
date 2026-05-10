@@ -5,13 +5,13 @@
 
 用法:
     # 仅测试雷达端（不连飞控，不发指令）
-    python tools/test_radar_avoidance.py --no-fc --dry-run
+    python FlightController/tools/test_radar_avoidance.py --no-fc --dry-run
 
     # 雷达 + 飞控，但不发送实际指令
-    python tools/test_radar_avoidance.py --dry-run
+    python FlightController/tools/test_radar_avoidance.py --dry-run
 
     # 完整链路（雷达 + 飞控 + 发送指令）
-    python tools/test_radar_avoidance.py
+    python FlightController/tools/test_radar_avoidance.py
 """
 
 import argparse
@@ -172,6 +172,9 @@ def main() -> None:
     radar.map.timeout_time = 0.15
     logger.info(f"Map_Circle 超时已调整为 {radar.map.timeout_time}s")
 
+    # 运行时间 vs 延迟采样点 (用于检测延迟增长)
+    _uptime_delay_samples: list[tuple[float, float, float]] = []
+
     if not radar.connected:
         logger.error("雷达未连接！请检查 TX 引脚和 PWM 供电。")
         radar.stop()
@@ -308,6 +311,24 @@ def main() -> None:
                         f"[PROFILE] ⚠ 数据年龄偏大 (最旧={data_age_max:.1f}s)! "
                         f"障碍物变化需等待 {data_age_max:.1f}s 才能被检测到"
                     )
+
+                # 采样运行时间 vs 延迟 (每10个 profile 输出一次趋势)
+                _uptime_delay_samples.append((radar.start_time, data_age_max, data_age_min))
+                if len(_uptime_delay_samples) >= 10:
+                    run_times = [now - s[0] for s in _uptime_delay_samples]
+                    max_ages = [s[1] for s in _uptime_delay_samples]
+                    min_ages = [s[2] for s in _uptime_delay_samples]
+                    # 线性回归检测趋势
+                    if len(run_times) >= 3:
+                        slope_max = np.polyfit([t for t in run_times], max_ages, 1)[0]
+                        slope_min = np.polyfit([t for t in run_times], min_ages, 1)[0]
+                        trend = "↑增长" if slope_max > 0.02 else ("↓下降" if slope_max < -0.02 else "→稳定")
+                        logger.info(
+                            f"[DELAY_TREND] 运行{run_times[-1]:.0f}s | "
+                            f"最旧: {max_ages[0]*1000:.0f}→{max_ages[-1]*1000:.0f}ms (趋势{trend}) | "
+                            f"最新: {min_ages[0]*1000:.0f}→{min_ages[-1]*1000:.0f}ms"
+                        )
+                    _uptime_delay_samples.clear()
 
             loop_count += 1
 
