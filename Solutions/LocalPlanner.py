@@ -15,6 +15,7 @@ class PlannerConfig:
     enable_free_flight: bool = False
     free_flight_speed_cm_s: float = 20.0
     forward_corridor_half_width_cm: float = 35.0
+    min_obstacle_distance_cm: float = 10.0
 
 
 @dataclass
@@ -107,7 +108,10 @@ class LocalPlanner:
             return None
         points = points.reshape(-1, 2)
         half_width = self.config.forward_corridor_half_width_cm
-        forward = points[(points[:, 0] > 0) & (np.abs(points[:, 1]) < half_width)]
+        min_dist = self.config.min_obstacle_distance_cm
+        forward = points[
+            (points[:, 0] > min_dist) & (np.abs(points[:, 1]) < half_width)
+        ]
         if forward.size == 0:
             return None
         return float(np.min(forward[:, 0]))

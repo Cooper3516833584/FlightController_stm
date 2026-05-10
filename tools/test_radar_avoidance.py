@@ -34,6 +34,7 @@ def main() -> None:
     from FlightController import FC_Controller
     from FlightController.Components.LDRadar_Driver import LD_Radar
     from FlightController.Solutions.LocalPlanner import LocalPlanner, PlannerConfig, VelocityCommand
+    import numpy as np
     from loguru import logger
 
     parser = argparse.ArgumentParser(
@@ -90,6 +91,17 @@ def main() -> None:
         help="前方走廊半宽/cm (默认: 50)",
     )
     parser.add_argument(
+        "--min-distance-cm",
+        type=float,
+        default=10.0,
+        help="障碍物最小检测距离/cm，过滤雷达自反射噪点 (默认: 10)",
+    )
+    parser.add_argument(
+        "--debug-dump",
+        action="store_true",
+        help="每次循环打印前方走廊内的原始点云数据 (用于诊断)",
+    )
+    parser.add_argument(
         "--loop-hz",
         type=float,
         default=10.0,
@@ -136,6 +148,7 @@ def main() -> None:
         obstacle_stop_distance_cm=args.stop_distance_cm,
         obstacle_slow_distance_cm=args.slow_distance_cm,
         forward_corridor_half_width_cm=args.corridor_half_width_cm,
+        min_obstacle_distance_cm=args.min_distance_cm,
     )
     planner = LocalPlanner(config=planner_config)
 
@@ -183,6 +196,27 @@ def main() -> None:
             # 3. 计算前方最近障碍物距离
             forward_dist = planner._nearest_forward_obstacle_cm(obstacles)
 
+            # 3b. debug: dump 前方走廊内的原始点云
+            if args.debug_dump and obstacles.size > 0:
+                pts = np.asarray(obstacles, dtype=float).reshape(-1, 2)
+                half_w = args.corridor_half_width_cm
+                min_d = args.min_distance_cm
+                forward_pts = pts[
+                    (pts[:, 0] > min_d) & (np.abs(pts[:, 1]) < half_w)
+                ]
+                all_forward = pts[pts[:, 0] > 0]
+                logger.info(
+                    f"[#{loop_count:04d}] DUMP: 总点云={len(pts)} | "
+                    f"前方全部(x>0)={len(all_forward)}点 | "
+                    f"前方走廊(x>{min_d} & |y|<{half_w})={len(forward_pts)}点"
+                )
+                if forward_pts.size > 0:
+                    # 按距离排序，取最近10个
+                    sorted_idx = np.argsort(forward_pts[:, 0])
+                    closest = forward_pts[sorted_idx][:10]
+                    for i, (x, y) in enumerate(closest):
+                        logger.info(f"  -> 第{i+1}近: x={x:.1f}cm, y={y:.1f}cm, dist={np.hypot(x,y):.1f}cm")
+
             # 4. 规划避障决策
             command = planner.plan(obstacles_body_cm=obstacles, target=None)
 
@@ -195,7 +229,8 @@ def main() -> None:
                     round(command.yaw_rate_deg_s),
                 )
 
-            # 6. 日志输出 (每10次循环打印一次详细信息，其余打印摘要)
+            # 6. 日志输出
+            dist_str = f"{forward_dist:.0f}cm" if forward_dist is not None else "无"
             if loop_count % 10 == 0:
                 fc_state_str = ""
                 if fc is not None:
@@ -210,14 +245,12 @@ def main() -> None:
 
                 logger.info(
                     f"[#{loop_count:04d}] {fc_state_str} | "
-                    f"点云={len(obstacles)}点 | "
-                    f"前方={forward_dist:.0f}cm" if forward_dist is not None else "[#{loop_count:04d}] 前方=无 | "
+                    f"点云={len(obstacles)}点 | 前方={dist_str} | "
                     f"指令=(vx={command.vx_cm_s:.0f}, vy={command.vy_cm_s:.0f}, "
                     f"vz={command.vz_cm_s:.0f}, yaw={command.yaw_rate_deg_s:.0f}) | "
                     f"原因={command.reason}"
                 )
             else:
-                dist_str = f"{forward_dist:.0f}cm" if forward_dist is not None else "---"
                 logger.debug(
                     f"[#{loop_count:04d}] 前方={dist_str} "
                     f"vx={command.vx_cm_s:.0f} reason={command.reason}"
