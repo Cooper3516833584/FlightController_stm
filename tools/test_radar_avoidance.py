@@ -296,13 +296,22 @@ def main() -> None:
                 uc_rate = (uc - _last_update_count) / max(elapsed_profile, 0.001)
                 _last_update_count = uc
 
+                # 有效点云率: 理论最小值 vs 实际
+                rpm = radar.map.rotation_spd
+                pps_expected = rpm / 60 * 360 / 12  # 理论包数/秒
+
                 # 单次 pipeline 耗时
                 get_time_ms = (t_after_get - t_before_get) * 1000
                 plan_time_ms = (t_after_plan - t_before_plan) * 1000
                 total_time_ms = (time.perf_counter() - t_start) * 1000
 
+                crc_err = radar._crc_errors
+                crc_rate = crc_err / max(elapsed_profile, 0.001)
+                throughput_pct = uc_rate / max(pps_expected, 1) * 100
+
                 logger.info(
-                    f"[PROFILE] 串口吞吐={uc_rate:.0f}包/s | "
+                    f"[PROFILE] 吞吐={uc_rate:.0f}/{pps_expected:.0f}包/s ({throughput_pct:.0f}%) | "
+                    f"CRC错误={crc_err}次 ({crc_rate:.1f}/s) | "
                     f"数据年龄: 最新={data_age_min*1000:.0f}ms 最旧={data_age_max*1000:.0f}ms | "
                     f"耗时: get={get_time_ms:.1f}ms plan={plan_time_ms:.1f}ms total={total_time_ms:.1f}ms"
                 )

@@ -54,6 +54,7 @@ class LD_Radar(object):
         self.subtask_skip = 4
         self._data_buf = b""
         self._count = 0
+        self._crc_errors = 0
         # 位姿估计
         self.rt_pose_update_event = threading.Event()
         self.rt_pose = [0, 0, 0]
@@ -199,8 +200,10 @@ class LD_Radar(object):
                             if self._count >= self.subtask_skip:
                                 self._count = 0
                                 self.subtask_event.set()
+                        else:
+                            self._crc_errors += 1
                 else:
-                    time.sleep(0.001)
+                    time.sleep(0)  # yield GIL without sleeping (ARM 100Hz kernel would turn sleep(0.001) into ~10ms)
             except Exception as e:
                 logger.exception(f"[RADAR] Listenning thread error")
                 buf = bytes()
