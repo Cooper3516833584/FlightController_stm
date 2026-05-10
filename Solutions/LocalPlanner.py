@@ -12,6 +12,9 @@ class PlannerConfig:
     obstacle_slow_distance_cm: float = 90.0
     target_center_deadband_px: float = 30.0
     camera_fov_deg: float = 70.0
+    enable_free_flight: bool = False
+    free_flight_speed_cm_s: float = 20.0
+    forward_corridor_half_width_cm: float = 35.0
 
 
 @dataclass
@@ -42,7 +45,9 @@ class LocalPlanner:
         target: TargetObservation | None,
     ) -> VelocityCommand:
         if target is None:
-            return VelocityCommand(0.0, 0.0, 0.0, 0.0, "no_target")
+            if not self.config.enable_free_flight:
+                return VelocityCommand(0.0, 0.0, 0.0, 0.0, "no_target")
+            return self._plan_free_flight(obstacles_body_cm)
 
         yaw_rate = self._target_yaw_rate(target)
         vx = self.config.approach_speed_cm_s
@@ -65,6 +70,22 @@ class LocalPlanner:
         )
         return VelocityCommand(vx, 0.0, 0.0, yaw_rate, "+".join(reasons))
 
+    def _plan_free_flight(self, obstacles_body_cm: np.ndarray) -> VelocityCommand:
+        vx = self.config.free_flight_speed_cm_s
+        reasons = ["free_flight"]
+
+        forward_distance = self._nearest_forward_obstacle_cm(obstacles_body_cm)
+        if forward_distance is not None:
+            if forward_distance < self.config.obstacle_stop_distance_cm:
+                vx = 0.0
+                reasons.append("obstacle_stop")
+            elif forward_distance < self.config.obstacle_slow_distance_cm:
+                vx *= 0.5
+                reasons.append("obstacle_slow")
+
+        vx = self._clip(vx, -self.config.max_speed_cm_s, self.config.max_speed_cm_s)
+        return VelocityCommand(vx, 0.0, 0.0, 0.0, "+".join(reasons))
+
     def _target_yaw_rate(self, target: TargetObservation) -> float:
         width, _ = target.image_size
         if width <= 0:
@@ -80,13 +101,13 @@ class LocalPlanner:
             self.config.yaw_rate_limit_deg_s,
         )
 
-    @staticmethod
-    def _nearest_forward_obstacle_cm(obstacles_body_cm: np.ndarray) -> float | None:
+    def _nearest_forward_obstacle_cm(self, obstacles_body_cm: np.ndarray) -> float | None:
         points = np.asarray(obstacles_body_cm, dtype=float)
         if points.size == 0:
             return None
         points = points.reshape(-1, 2)
-        forward = points[(points[:, 0] > 0) & (np.abs(points[:, 1]) < 35.0)]
+        half_width = self.config.forward_corridor_half_width_cm
+        forward = points[(points[:, 0] > 0) & (np.abs(points[:, 1]) < half_width)]
         if forward.size == 0:
             return None
         return float(np.min(forward[:, 0]))

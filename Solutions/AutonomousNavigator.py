@@ -13,12 +13,15 @@ class AutonomousNavigatorConfig:
 
 
 class AutonomousNavigator:
-    def __init__(self, *, fc, t265, multi_radar, camera, detector, planner=None, config=None):
+    def __init__(self, *, fc, multi_radar, t265=None, camera=None, detector=None, planner=None, config=None):
         self.fc = fc
         self.t265 = t265
         self.multi_radar = multi_radar
         self.camera = camera
         self.detector = detector
+        if planner is None and camera is None:
+            from .LocalPlanner import PlannerConfig
+            planner = LocalPlanner(config=PlannerConfig(enable_free_flight=True))
         self.planner = planner or LocalPlanner()
         self.config = config or AutonomousNavigatorConfig()
         self._stop_event = threading.Event()
@@ -26,21 +29,24 @@ class AutonomousNavigator:
 
     def step(self):
         """Run one perception-planning-control loop and return a VelocityCommand."""
-        ok, frame = self.camera.read()
-        if not ok or frame is None:
-            command = VelocityCommand(0.0, 0.0, 0.0, 0.0, "camera_failed")
-            self._send_command(command)
-            return command
+        if self.camera is None or self.detector is None:
+            target = None
+        else:
+            ok, frame = self.camera.read()
+            if not ok or frame is None:
+                command = VelocityCommand(0.0, 0.0, 0.0, 0.0, "camera_failed")
+                self._send_command(command)
+                return command
 
-        detection = self.detector.detect_best(frame, class_name=self.config.target_class)
-        target = None
-        if detection is not None:
-            target = TargetObservation(
-                center_px=detection.center,
-                image_size=(frame.shape[1], frame.shape[0]),
-                confidence=detection.confidence,
-                class_name=detection.class_name,
-            )
+            detection = self.detector.detect_best(frame, class_name=self.config.target_class)
+            target = None
+            if detection is not None:
+                target = TargetObservation(
+                    center_px=detection.center,
+                    image_size=(frame.shape[1], frame.shape[0]),
+                    confidence=detection.confidence,
+                    class_name=detection.class_name,
+                )
 
         obstacles = self.multi_radar.get_obstacle_points_body_cm(
             max_distance_cm=self.config.max_obstacle_distance_cm
