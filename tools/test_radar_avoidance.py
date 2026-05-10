@@ -318,10 +318,11 @@ def main() -> None:
                     run_times = [now - s[0] for s in _uptime_delay_samples]
                     max_ages = [s[1] for s in _uptime_delay_samples]
                     min_ages = [s[2] for s in _uptime_delay_samples]
-                    # 线性回归检测趋势
+                    # 线性回归检测趋势 (中心化时间轴避免 Polyfit 病态条件)
                     if len(run_times) >= 3:
-                        slope_max = np.polyfit([t for t in run_times], max_ages, 1)[0]
-                        slope_min = np.polyfit([t for t in run_times], min_ages, 1)[0]
+                        t0 = run_times[0]
+                        centered_t = [t - t0 for t in run_times]
+                        slope_max = np.polyfit(centered_t, max_ages, 1)[0]
                         trend = "↑增长" if slope_max > 0.02 else ("↓下降" if slope_max < -0.02 else "→稳定")
                         logger.info(
                             f"[DELAY_TREND] 运行{run_times[-1]:.0f}s | "
