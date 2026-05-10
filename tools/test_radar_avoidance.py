@@ -168,6 +168,10 @@ def main() -> None:
     logger.info("等待雷达预热 3 秒...")
     time.sleep(3)
 
+    # 降低 Map_Circle 超时: 10Hz 扫描周期=100ms, 超时设为 150ms 足够
+    radar.map.timeout_time = 0.15
+    logger.info(f"Map_Circle 超时已调整为 {radar.map.timeout_time}s")
+
     if not radar.connected:
         logger.error("雷达未连接！请检查 TX 引脚和 PWM 供电。")
         radar.stop()
@@ -272,9 +276,11 @@ def main() -> None:
                 elapsed_profile = now - _last_profile_time
                 _last_profile_time = now
 
-                # 数据新鲜度: 采样 Map_Circle 中最旧和最新的时间戳
+                # 数据新鲜度: 只统计有效数据(data!=-1)的时间戳
                 ts = radar.map.time_stamp
-                valid_ts = ts[ts > 0]
+                data = radar.map.data
+                valid_mask = (ts > 0) & (data != -1)
+                valid_ts = ts[valid_mask]
                 data_age_min = 999.0
                 data_age_max = 0.0
                 if len(valid_ts) > 0:
