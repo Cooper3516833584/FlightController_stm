@@ -102,6 +102,11 @@ def main() -> None:
         help="每次循环打印前方走廊内的原始点云数据 (用于诊断)",
     )
     parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="性能分析模式: 测量每级管道的延迟并报告数据新鲜度",
+    )
+    parser.add_argument(
         "--loop-hz",
         type=float,
         default=10.0,
@@ -176,6 +181,8 @@ def main() -> None:
     logger.info("按 Ctrl+C 停止...")
 
     loop_count = 0
+    _last_update_count = 0
+    _last_profile_time = time.perf_counter()
     try:
         while True:
             t_start = time.perf_counter()
@@ -189,12 +196,16 @@ def main() -> None:
                 continue
 
             # 2. 获取机体坐标系下的障碍点云
+            t_before_get = time.perf_counter()
             obstacles = radar.get_points_body_cm(
                 max_distance_cm=args.max_distance_cm
             )
+            t_after_get = time.perf_counter()
 
             # 3. 计算前方最近障碍物距离
+            t_before_plan = time.perf_counter()
             forward_dist = planner._nearest_forward_obstacle_cm(obstacles)
+            t_after_plan = time.perf_counter()
 
             # 3b. debug: dump 前方走廊内的原始点云
             if args.debug_dump and obstacles.size > 0:
@@ -211,7 +222,6 @@ def main() -> None:
                     f"前方走廊(x>{min_d} & |y|<{half_w})={len(forward_pts)}点"
                 )
                 if forward_pts.size > 0:
-                    # 按距离排序，取最近10个
                     sorted_idx = np.argsort(forward_pts[:, 0])
                     closest = forward_pts[sorted_idx][:10]
                     for i, (x, y) in enumerate(closest):
@@ -255,6 +265,43 @@ def main() -> None:
                     f"[#{loop_count:04d}] 前方={dist_str} "
                     f"vx={command.vx_cm_s:.0f} reason={command.reason}"
                 )
+
+            # 6b. profile: 计时分析
+            if args.profile and loop_count % 30 == 0:
+                now = time.perf_counter()
+                elapsed_profile = now - _last_profile_time
+                _last_profile_time = now
+
+                # 数据新鲜度: 采样 Map_Circle 中最旧和最新的时间戳
+                ts = radar.map.time_stamp
+                valid_ts = ts[ts > 0]
+                data_age_min = 999.0
+                data_age_max = 0.0
+                if len(valid_ts) > 0:
+                    ages = now - valid_ts
+                    data_age_min = float(np.min(ages))
+                    data_age_max = float(np.max(ages))
+
+                # 串口吞吐量: update_count 变化率
+                uc = radar.map.update_count
+                uc_rate = (uc - _last_update_count) / max(elapsed_profile, 0.001)
+                _last_update_count = uc
+
+                # 单次 pipeline 耗时
+                get_time_ms = (t_after_get - t_before_get) * 1000
+                plan_time_ms = (t_after_plan - t_before_plan) * 1000
+                total_time_ms = (time.perf_counter() - t_start) * 1000
+
+                logger.info(
+                    f"[PROFILE] 串口吞吐={uc_rate:.0f}包/s | "
+                    f"数据年龄: 最新={data_age_min*1000:.0f}ms 最旧={data_age_max*1000:.0f}ms | "
+                    f"耗时: get={get_time_ms:.1f}ms plan={plan_time_ms:.1f}ms total={total_time_ms:.1f}ms"
+                )
+                if data_age_max > 1.0:
+                    logger.warning(
+                        f"[PROFILE] ⚠ 数据年龄偏大 (最旧={data_age_max:.1f}s)! "
+                        f"障碍物变化需等待 {data_age_max:.1f}s 才能被检测到"
+                    )
 
             loop_count += 1
 
