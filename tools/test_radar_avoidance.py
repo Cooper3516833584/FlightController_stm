@@ -122,8 +122,8 @@ def main() -> None:
 
     # ---------- 日志文件输出 (绕过SSH缓冲) ----------
     if args.log_file:
-        logger.add(args.log_file, level="DEBUG", format="{time} | {level: <8} | {message}", enqueue=False)
-        logger.info(f"日志文件输出已启用: {args.log_file}")
+        logger.add(args.log_file, level="DEBUG", format="{time} | {level: <8} | {message}", enqueue=True)
+        logger.info(f"日志文件输出已启用 (异步): {args.log_file}")
 
     logger.info(f"正在连接雷达 {args.port} ...")
     radar = LD_Radar(
