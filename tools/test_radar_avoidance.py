@@ -318,12 +318,17 @@ def main() -> None:
                     run_times = [now - s[0] for s in _uptime_delay_samples]
                     max_ages = [s[1] for s in _uptime_delay_samples]
                     min_ages = [s[2] for s in _uptime_delay_samples]
-                    # 线性回归检测趋势 (中心化时间轴避免 Polyfit 病态条件)
-                    if len(run_times) >= 3:
-                        t0 = run_times[0]
-                        centered_t = [t - t0 for t in run_times]
-                        slope_max = np.polyfit(centered_t, max_ages, 1)[0]
-                        trend = "↑增长" if slope_max > 0.02 else ("↓下降" if slope_max < -0.02 else "→稳定")
+                    # 趋势检测: 比较前后半段的平均值
+                    if len(run_times) >= 4:
+                        n = len(max_ages)
+                        mid = n // 2
+                        first_avg = sum(max_ages[:mid]) / mid
+                        second_avg = sum(max_ages[mid:]) / (n - mid)
+                        if first_avg > 0.001:
+                            change = (second_avg - first_avg) / first_avg
+                        else:
+                            change = 0.0
+                        trend = "↑增长" if change > 0.15 else ("↓下降" if change < -0.15 else "→稳定")
                         logger.info(
                             f"[DELAY_TREND] 运行{run_times[-1]:.0f}s | "
                             f"最旧: {max_ages[0]*1000:.0f}→{max_ages[-1]*1000:.0f}ms (趋势{trend}) | "
